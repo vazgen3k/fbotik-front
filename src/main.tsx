@@ -109,30 +109,59 @@ type TimeslotOption = {
   to: string;
 };
 
+type BulkJobResult = {
+  code: string;
+  name: string;
+  cluster_id: number;
+  state: string;
+  message: string;
+  draft_id?: number;
+  order_id?: number;
+  warehouse?: WarehouseOption;
+};
+
+type BulkJob = {
+  job_id: string;
+  state: string;
+  total: number;
+  completed: number;
+  failed: number;
+  results: BulkJobResult[];
+};
+
+type OrderSnapshot = {
+  order_id: number;
+  state: string;
+  state_updated_date?: string;
+  drop_off_warehouse?: WarehouseOption & { warehouse_id?: number };
+};
+
+const DEFAULT_WAREHOUSE_NAME = "МОСКВА_10097";
+
 const DESTINATION_CLUSTERS: Record<string, { id: number | null; name: string }> = {
   "МСК": { id: 4039, name: "Москва, МО и Дальние регионы" },
   "СПБ": { id: 4007, name: "Санкт-Петербург и СЗО" },
-  "САМ": { id: null, name: "Самара" },
+  "САМ": { id: 4042, name: "Самара" },
   "КАЗ": { id: 4041, name: "Казань" },
   "САРАТ": { id: 4049, name: "Саратов" },
   "ОР": { id: 4069, name: "Оренбург" },
   "УФА": { id: 4040, name: "Уфа" },
-  "КРАС": { id: 4043, name: "Краснодар" },
+  "КРАС": { id: 4065, name: "Краснодар" },
   "РОСТ": { id: 4071, name: "Ростов" },
   "ТВ": { id: 4072, name: "Тверь" },
   "ЯРОС": { id: 4051, name: "Ярославль" },
-  "МАХА": { id: null, name: "Махачкала" },
-  "НВН": { id: null, name: "Невинномысск" },
+  "МАХА": { id: 4077, name: "Махачкала" },
+  "НВН": { id: 4076, name: "Невинномысск" },
   "ВРН": { id: 4036, name: "Воронеж" },
   "ПЕР": { id: 4070, name: "Пермь" },
   "ЕКБ": { id: 4066, name: "Екатеринбург" },
   "НСК": { id: 4067, name: "Новосибирск" },
   "ОМСК": { id: 4068, name: "Омск" },
   "ТЮМ": { id: 4046, name: "Тюмень" },
-  "ЯРСК": { id: null, name: "Красноярск" },
+  "ЯРСК": { id: 4043, name: "Красноярск" },
   "ХАБ": { id: 4002, name: "Дальний Восток" },
-  "КЛГ": { id: null, name: "Калининград" },
-  "РБ": { id: null, name: "Республика Беларусь" },
+  "КЛГ": { id: 4004, name: "Калининград" },
+  "РБ": { id: 4001, name: "Республика Беларусь" },
   "АСТ": { id: 4075, name: "Астана" },
   "АЛМ": { id: 4074, name: "Алматы" },
 };
@@ -595,6 +624,29 @@ const AppHeader = () => (
   </section>
 );
 
+const postLiveAction = async (action: string, values: Record<string, unknown>) => {
+  const response = await fetch("/local-api/ozon/live", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...values }),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.ok) {
+    const validationMessage = Array.isArray(result.detail)
+      ? result.detail
+          .map((item: { loc?: Array<string | number>; msg?: string }) => {
+            const field = item.loc?.filter((part) => part !== "body").join(".");
+            return `${field || "поле"}: ${item.msg || "некорректное значение"}`;
+          })
+          .join("; ")
+      : "";
+    throw new Error(
+      result.message || result.data?.message || validationMessage || `Запрос завершился с HTTP ${response.status}`,
+    );
+  }
+  return result.data;
+};
+
 function App() {
   const [records, setRecords] = useState<ShipmentRecord[]>([]);
   const [sourceName, setSourceName] = useState("");
@@ -622,6 +674,17 @@ function App() {
       return Array.isArray(stored) ? stored.map(Number).filter(Number.isInteger) : [];
     } catch {
       return [];
+    }
+  });
+  const [preferredWarehouseName, setPreferredWarehouseName] = useState(
+    () => localStorage.getItem("fbotik-preferred-warehouse") || DEFAULT_WAREHOUSE_NAME,
+  );
+  const [bulkJob, setBulkJob] = useState<BulkJob | null>(null);
+  const [orderSnapshots, setOrderSnapshots] = useState<Record<number, OrderSnapshot>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("fbotik-order-snapshots") ?? "{}");
+    } catch {
+      return {};
     }
   });
   const [liveBusy, setLiveBusy] = useState("");
@@ -695,6 +758,14 @@ function App() {
     localStorage.setItem("ozon-crm-created-order-ids", JSON.stringify(createdOrderIds));
   }, [createdOrderIds]);
 
+  useEffect(() => {
+    localStorage.setItem("fbotik-preferred-warehouse", preferredWarehouseName);
+  }, [preferredWarehouseName]);
+
+  useEffect(() => {
+    localStorage.setItem("fbotik-order-snapshots", JSON.stringify(orderSnapshots));
+  }, [orderSnapshots]);
+
   const totals = useMemo(() => {
     const destinationTotals: Record<string, number> = {};
     selectedRecords.forEach((record) => {
@@ -710,6 +781,29 @@ function App() {
       destinationTotals,
     };
   }, [selectedRecords]);
+
+  const bulkClusters = useMemo(
+    () =>
+      Object.entries(totals.destinationTotals)
+        .map(([code]) => {
+          const destination = DESTINATION_CLUSTERS[code];
+          if (!destination?.id) return null;
+          const items = selectedRecords
+            .map((record) => ({
+              sku: Number(record.sku),
+              quantity: record.destinations[code] ?? 0,
+            }))
+            .filter((item) => Number.isSafeInteger(item.sku) && item.sku > 0 && item.quantity > 0);
+          return items.length
+            ? { code, name: destination.name, clusterId: destination.id, items }
+            : null;
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+    [selectedRecords, totals.destinationTotals],
+  );
+  const unsupportedDestinations = Object.keys(totals.destinationTotals).filter(
+    (code) => !DESTINATION_CLUSTERS[code]?.id,
+  );
 
   const plannedProductRequests = Math.ceil(productDrafts.length / productBatchSize);
   const productEta = plannedProductRequests / Math.max(1, productRate);
@@ -784,29 +878,7 @@ function App() {
     setLiveBusy(action);
     setLiveError("");
     try {
-      const response = await fetch("/local-api/ozon/live", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...values }),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) {
-        const validationMessage = Array.isArray(result.detail)
-          ? result.detail
-              .map((item: { loc?: Array<string | number>; msg?: string }) => {
-                const field = item.loc?.filter((part) => part !== "body").join(".");
-                return `${field || "поле"}: ${item.msg || "некорректное значение"}`;
-              })
-              .join("; ")
-          : "";
-        throw new Error(
-          result.message ||
-            result.data?.message ||
-            validationMessage ||
-            `Запрос завершился с HTTP ${response.status}`,
-        );
-      }
-      return result.data;
+      return await postLiveAction(action, values);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Операция не выполнена.";
       setLiveError(message);
@@ -852,8 +924,15 @@ function App() {
           address: String(item.storage_warehouse.address ?? ""),
         }));
       setLiveWarehouses(warehouses);
-      setLiveWarehouseId(String(warehouses[0]?.id ?? ""));
-      setLiveMessage(`OZON предложил доступных складов: ${warehouses.length}. Выберите склад и запросите время.`);
+      const preferred = warehouses.find(
+        (warehouse: WarehouseOption) => warehouse.name.toLocaleUpperCase() === preferredWarehouseName.toLocaleUpperCase(),
+      );
+      setLiveWarehouseId(String(preferred?.id ?? ""));
+      setLiveMessage(
+        preferred
+          ? `Основной ПВЗ ${preferredWarehouseName} выбран автоматически.`
+          : `ПВЗ ${preferredWarehouseName} недоступен. Выберите другой склад вручную.`,
+      );
     } catch {
       // Error is already shown in the live panel.
     }
@@ -862,7 +941,8 @@ function App() {
   const loadLiveTimeslots = async () => {
     if (!liveDraftId || !liveDestinationData?.id || !liveWarehouseId) return;
     const dateFrom = new Date();
-    const dateTo = new Date();
+    dateFrom.setDate(dateFrom.getDate() + 7);
+    const dateTo = new Date(dateFrom);
     dateTo.setDate(dateTo.getDate() + 7);
     try {
       const data = await liveRequest("timeslots", {
@@ -882,7 +962,7 @@ function App() {
       );
       setLiveTimeslots(timeslots);
       setLiveTimeslotFrom(timeslots[0]?.from ?? "");
-      setLiveMessage(`Получено ${timeslots.length} доступных окон на ближайшие 7 дней.`);
+      setLiveMessage(`Получено ${timeslots.length} окон на период через неделю.`);
     } catch {
       // Error is already shown in the live panel.
     }
@@ -933,6 +1013,56 @@ function App() {
     }
   };
 
+  const rememberBulkOrders = (job: BulkJob) => {
+    const orderIds = job.results
+      .map((result) => Number(result.order_id))
+      .filter((orderId) => Number.isSafeInteger(orderId) && orderId > 0);
+    if (orderIds.length) {
+      setCreatedOrderIds((current) => Array.from(new Set([...current, ...orderIds])));
+    }
+  };
+
+  const startBulkSupplies = async () => {
+    if (!bulkClusters.length) return;
+    const dateFrom = new Date();
+    dateFrom.setDate(dateFrom.getDate() + 7);
+    const dateTo = new Date(dateFrom);
+    dateTo.setDate(dateTo.getDate() + 7);
+    const confirmed = window.confirm(
+      `Создать заявки по всем доступным кластерам?\n\nКластеров: ${bulkClusters.length}\nПВЗ: ${preferredWarehouseName}\nПервый таймслот: начиная через 7 дней\n\nBackend поставит запросы в очередь с лимитом OZON 2/min.`,
+    );
+    if (!confirmed) return;
+    try {
+      const data = await liveRequest("start-bulk-supplies", {
+        requestId: crypto.randomUUID(),
+        preferredWarehouseName,
+        dateFrom: dateOnly(dateFrom),
+        dateTo: dateOnly(dateTo),
+        clusters: bulkClusters,
+      });
+      setBulkJob(data);
+      setLiveMessage(`Массовая очередь запущена: ${bulkClusters.length} кластеров.`);
+    } catch {
+      // Error is already shown in the live panel.
+    }
+  };
+
+  const syncOrders = async (silent = false) => {
+    if (!createdOrderIds.length) return;
+    try {
+      const data = silent
+        ? await postLiveAction("sync-orders", { orderIds: createdOrderIds.slice(0, 50) })
+        : await liveRequest("sync-orders", { orderIds: createdOrderIds.slice(0, 50) });
+      const snapshots = Object.fromEntries(
+        (data.orders ?? []).map((order: OrderSnapshot) => [Number(order.order_id), order]),
+      );
+      setOrderSnapshots((current) => ({ ...current, ...snapshots }));
+      if (!silent) setLiveMessage(`Обновлено заявок из OZON: ${Object.keys(snapshots).length}.`);
+    } catch {
+      if (!silent) setLiveError("Не удалось обновить статусы заявок из OZON.");
+    }
+  };
+
   const cancelVisibleSupply = async () => {
     if (!liveOrderId) return;
     if (!window.confirm(`Отменить живую заявку ${liveOrderId}?`)) return;
@@ -955,7 +1085,7 @@ function App() {
           : `Статус отмены: ${data.status}.`,
       );
       if (data.status === "SUCCESS" && data.result?.is_order_cancelled) {
-        setCreatedOrderIds((current) => current.filter((id) => id !== liveOrderId));
+        void syncOrders(true);
       }
     } catch {
       // Error is already shown in the live panel.
@@ -971,11 +1101,7 @@ function App() {
     try {
       const data = await liveRequest("cancel-supplies", { orderIds: createdOrderIds });
       const accepted = (data.results ?? []).filter((item: any) => item.ok).length;
-      const failedIds = (data.results ?? [])
-        .filter((item: any) => !item.ok)
-        .map((item: any) => Number(item.orderId));
-      const failed = failedIds.length;
-      setCreatedOrderIds(failedIds);
+      const failed = (data.results ?? []).filter((item: any) => !item.ok).length;
       setLiveMessage(
         failed
           ? `Отмена запущена для ${accepted} заявок, ошибок запуска: ${failed}.`
@@ -1033,6 +1159,26 @@ function App() {
       "Очередь подготовлена локально. В production браузер должен отправить этот пакет на backend, а backend уже дозирует запросы к OZON.",
     );
   };
+
+  useEffect(() => {
+    if (!bulkJob || ["completed", "completed_with_errors", "cancelled"].includes(bulkJob.state)) return;
+    const timer = window.setInterval(() => {
+      void postLiveAction("bulk-job-status", { jobId: bulkJob.job_id })
+        .then((job: BulkJob) => {
+          setBulkJob(job);
+          rememberBulkOrders(job);
+        })
+        .catch((error) => setLiveError(error instanceof Error ? error.message : "Не удалось обновить очередь."));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [bulkJob?.job_id, bulkJob?.state]);
+
+  useEffect(() => {
+    if (!createdOrderIds.length) return;
+    void syncOrders(true);
+    const timer = window.setInterval(() => void syncOrders(true), 60_000);
+    return () => window.clearInterval(timer);
+  }, [createdOrderIds.join(",")]);
 
   useEffect(() => {
     const context = document.modelContext;
@@ -1461,6 +1607,58 @@ function App() {
           </span>
         </div>
 
+        <div className="bulk-control">
+          <div className="bulk-control-head">
+            <div>
+              <p className="eyebrow">массовая отправка</p>
+              <h3>Все кластеры из загруженного файла</h3>
+            </div>
+            <span className="pill">{bulkClusters.length} готово</span>
+          </div>
+          <div className="bulk-settings">
+            <label>
+              <span>Основной ПВЗ</span>
+              <input
+                value={preferredWarehouseName}
+                onChange={(event) => setPreferredWarehouseName(event.target.value)}
+              />
+            </label>
+            <div>
+              <span>Таймслот</span>
+              <strong>первый доступный через 7 дней</strong>
+            </div>
+            <button
+              className="action-button danger-button"
+              onClick={() => void startBulkSupplies()}
+              disabled={!bulkClusters.length || Boolean(liveBusy) || Boolean(bulkJob && !["completed", "completed_with_errors", "cancelled"].includes(bulkJob.state))}
+            >
+              <Send size={17} /> Запустить все кластеры
+            </button>
+          </div>
+          {unsupportedDestinations.length > 0 && (
+            <p className="action-hint">
+              Без ID кластера и пока не попадут в запуск: {unsupportedDestinations.join(", ")}.
+            </p>
+          )}
+          {bulkJob && (
+            <div className="bulk-progress">
+              <div className="bulk-progress-summary">
+                <strong>Статус: {bulkJob.state}</strong>
+                <span>{bulkJob.completed} готово · {bulkJob.failed} ошибок · {bulkJob.total} всего</span>
+              </div>
+              <div className="bulk-results">
+                {bulkJob.results.map((result) => (
+                  <article className={result.state === "completed" ? "complete" : result.state === "failed" ? "failed" : ""} key={result.code}>
+                    <strong>{result.code} · {result.name}</strong>
+                    <span>{result.message}</span>
+                    {result.order_id && <small>order_id {result.order_id}</small>}
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="live-summary">
           <div>
             <span>Товар</span>
@@ -1523,6 +1721,7 @@ function App() {
             </button>
             {liveWarehouses.length > 0 && (
               <select value={liveWarehouseId} onChange={(event) => setLiveWarehouseId(event.target.value)}>
+                <option value="">Выберите ПВЗ</option>
                 {liveWarehouses.map((warehouse) => (
                   <option value={warehouse.id} key={warehouse.id}>
                     {warehouse.name}
@@ -1535,7 +1734,7 @@ function App() {
           <article className={liveTimeslots.length ? "complete" : ""}>
             <span className="step-number">3</span>
             <h3>Дата и время</h3>
-            <p>Запрашиваем свободные часовые окна на выбранном складе на ближайшие семь дней.</p>
+            <p>Запрашиваем свободные окна начиная через семь дней.</p>
             <button
               className="action-button secondary"
               onClick={() => void loadLiveTimeslots()}
@@ -1607,6 +1806,34 @@ function App() {
           <strong>{liveBusy ? "Выполняется запрос…" : liveError ? "Ошибка" : "Что происходит"}</strong>
           <p>{liveError || liveMessage}</p>
         </div>
+
+        {createdOrderIds.length > 0 && (
+          <div className="order-sync">
+            <div className="order-sync-head">
+              <div>
+                <p className="eyebrow">синхронизация с ЛК</p>
+                <h3>Созданные заявки</h3>
+              </div>
+              <button className="icon-text" onClick={() => void syncOrders()} disabled={Boolean(liveBusy)}>
+                <RefreshCcw size={17} /> Обновить сейчас
+              </button>
+            </div>
+            <div className="order-sync-grid">
+              {createdOrderIds.map((orderId) => {
+                const snapshot = orderSnapshots[orderId];
+                return (
+                  <article key={orderId}>
+                    <strong>{orderId}</strong>
+                    <span className={`pill ${snapshot?.state?.includes("CANCEL") ? "danger" : "ok"}`}>
+                      {snapshot?.state ?? "ожидает синхронизации"}
+                    </span>
+                    <small>{snapshot?.drop_off_warehouse?.name ?? preferredWarehouseName}</small>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="panel queue-panel">
