@@ -1029,7 +1029,7 @@ function App() {
     const dateTo = new Date(dateFrom);
     dateTo.setDate(dateTo.getDate() + 7);
     const confirmed = window.confirm(
-      `Создать заявки по всем доступным кластерам?\n\nКластеров: ${bulkClusters.length}\nПВЗ: ${preferredWarehouseName}\nПервый таймслот: начиная через 7 дней\n\nBackend поставит запросы в очередь с лимитом OZON 2/min.`,
+      `Создать одну мультикластерную заявку?\n\nКластеров: ${bulkClusters.length}\nПВЗ: ${preferredWarehouseName}\nПервый таймслот: начиная через 7 дней\n\nВсе кластеры будут отправлены в OZON одним черновиком.`,
     );
     if (!confirmed) return;
     try {
@@ -1633,7 +1633,7 @@ function App() {
               onClick={() => void startBulkSupplies()}
               disabled={!bulkClusters.length || Boolean(liveBusy) || Boolean(bulkJob && !["completed", "completed_with_errors", "cancelled"].includes(bulkJob.state))}
             >
-              <Send size={17} /> Запустить все кластеры
+              <Send size={17} /> Создать общую заявку
             </button>
           </div>
           {unsupportedDestinations.length > 0 && (
