@@ -1617,12 +1617,12 @@ function App() {
           </div>
           <div className="bulk-settings">
             <label>
-              <span>Ожидаемый ПВЗ</span>
+              <span>Точка отгрузки</span>
               <input
                 value={preferredWarehouseName}
                 onChange={(event) => setPreferredWarehouseName(event.target.value)}
               />
-              <small>OZON привязывает пункт отгрузки из настроек кабинета</small>
+              <small>Для массового запуска создаём кросс-док через эту точку</small>
             </label>
             <div>
               <span>Таймслот</span>
