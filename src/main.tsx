@@ -1168,7 +1168,15 @@ function App() {
           setBulkJob(job);
           rememberBulkOrders(job);
         })
-        .catch((error) => setLiveError(error instanceof Error ? error.message : "Не удалось обновить очередь."));
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Не удалось обновить очередь.";
+          if (message.includes("Массовая задача не найдена")) {
+            setBulkJob(null);
+            setLiveError("Предыдущая очередь остановлена после перезапуска backend. Можно запустить новую.");
+            return;
+          }
+          setLiveError(message);
+        });
     }, 5000);
     return () => window.clearInterval(timer);
   }, [bulkJob?.job_id, bulkJob?.state]);
