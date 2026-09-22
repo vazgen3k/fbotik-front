@@ -1029,7 +1029,7 @@ function App() {
     const dateTo = new Date(dateFrom);
     dateTo.setDate(dateTo.getDate() + 7);
     const confirmed = window.confirm(
-      `Создать мультикластерные заявки?\n\nКластеров: ${bulkClusters.length}\nПакетов: ${Math.ceil(bulkClusters.length / 10)}\nПВЗ: ${preferredWarehouseName}\nПервый таймслот: начиная через 7 дней\n\nBackend отправит до 10 кластеров в каждом черновике.`,
+      `Создать заявки последовательно?\n\nКластеров: ${bulkClusters.length}\nПВЗ: ${preferredWarehouseName}\nПервый таймслот: начиная через 7 дней\n\nBackend полностью закончит один кластер и только затем перейдёт к следующему.`,
     );
     if (!confirmed) return;
     try {
@@ -1641,7 +1641,7 @@ function App() {
               onClick={() => void startBulkSupplies()}
               disabled={!bulkClusters.length || Boolean(liveBusy) || Boolean(bulkJob && !["completed", "completed_with_errors", "cancelled"].includes(bulkJob.state))}
             >
-              <Send size={17} /> Создать мультикластерные заявки
+              <Send size={17} /> Запустить по одному
             </button>
           </div>
           {unsupportedDestinations.length > 0 && (
